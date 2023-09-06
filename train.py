@@ -27,6 +27,7 @@ dir_checkpoint = Path('./checkpoints/')
 def train_model(
         model,
         device,
+        input_size,
         epochs: int = 5,
         batch_size: int = 1,
         learning_rate: float = 1e-5,
@@ -40,9 +41,9 @@ def train_model(
 ):
     # 1. Create dataset
     try:
-        dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
+        dataset = CarvanaDataset(dir_img, dir_mask, img_scale, training_size = input_size)
     except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+        dataset = BasicDataset(dir_img, dir_mask, img_scale, training_size = input_size)
 
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
@@ -75,7 +76,7 @@ def train_model(
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
     criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
@@ -127,7 +128,7 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                division_step = (n_train // (5 * batch_size))
+                division_step = (n_train // (batch_size))
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -168,12 +169,13 @@ def train_model(
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
-    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=5, help='Number of epochs')
-    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
+    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--input-size', dest='input_size', type=int, default=512, help='input size')
+    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=8, help='Batch size')
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
-    parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
+    parser.add_argument('--scale', '-s', type=float, default=1, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
@@ -208,30 +210,31 @@ if __name__ == '__main__':
         logging.info(f'Model loaded from {args.load}')
 
     model.to(device=device)
-    try:
-        train_model(
-            model=model,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            learning_rate=args.lr,
-            device=device,
-            img_scale=args.scale,
-            val_percent=args.val / 100,
-            amp=args.amp
-        )
-    except torch.cuda.OutOfMemoryError:
-        logging.error('Detected OutOfMemoryError! '
-                      'Enabling checkpointing to reduce memory usage, but this slows down training. '
-                      'Consider enabling AMP (--amp) for fast and memory efficient training')
-        torch.cuda.empty_cache()
-        model.use_checkpointing()
-        train_model(
-            model=model,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            learning_rate=args.lr,
-            device=device,
-            img_scale=args.scale,
-            val_percent=args.val / 100,
-            amp=args.amp
-        )
+    #try:
+    train_model(
+        model=model,
+        input_size= args.input_size,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.lr,
+        device=device,
+        img_scale=args.scale,
+        val_percent=args.val / 100,
+        amp=args.amp
+    )
+    # except torch.cuda.OutOfMemoryError:
+    #     logging.error('Detected OutOfMemoryError! '
+    #                   'Enabling checkpointing to reduce memory usage, but this slows down training. '
+    #                   'Consider enabling AMP (--amp) for fast and memory efficient training')
+    #     torch.cuda.empty_cache()
+    #     model.use_checkpointing()
+    #     train_model(
+    #         model=model,
+    #         epochs=args.epochs,
+    #         batch_size=args.batch_size,
+    #         learning_rate=args.lr,
+    #         device=device,
+    #         img_scale=args.scale,
+    #         val_percent=args.val / 100,
+    #         amp=args.amp
+    #     )

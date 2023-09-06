@@ -33,15 +33,37 @@ def unique_mask_values(idx, mask_dir, mask_suffix):
         return np.unique(mask, axis=0)
     else:
         raise ValueError(f'Loaded masks should have 2 or 3 dimensions, found {mask.ndim}')
+    
+def square_padding(image, is_mask):
+        
+        # Find the dimensions of the image
+        width, height = image.size
+        # Calculate the size of the square (maximum of height and width)
+        size = max(width, height)
+
+        if is_mask:
+            square_image = Image.new('L', (size, size), 0)
+        else:
+            # Create a new square canvas filled with black (zeros)
+            square_image = Image.new('RGB', (size, size), (0, 0, 0))
+
+        # Calculate the position to paste the rectangular image in the center of the square canvas
+        x_offset = (size - width) // 2
+        y_offset = (size - height) // 2
+
+        # Paste the rectangular image onto the square canvas
+        square_image.paste(image, (x_offset, y_offset))
+        
+        return square_image
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = '', training_size = 512):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
-        self.scale = scale
         self.mask_suffix = mask_suffix
+        self.training_size = training_size
 
         self.ids = [splitext(file)[0] for file in listdir(images_dir) if isfile(join(images_dir, file)) and not file.startswith('.')]
         if not self.ids:
@@ -62,10 +84,11 @@ class BasicDataset(Dataset):
         return len(self.ids)
 
     @staticmethod
-    def preprocess(mask_values, pil_img, scale, is_mask):
-        w, h = pil_img.size
-        newW, newH = int(scale * w), int(scale * h)
+    def preprocess(mask_values, pil_img, is_mask, training_size):
+        newW, newH = training_size, training_size
         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        pil_img = square_padding(pil_img, is_mask)
+        
         pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
         img = np.asarray(pil_img)
 
@@ -103,8 +126,8 @@ class BasicDataset(Dataset):
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
-        mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
+        img = self.preprocess(self.mask_values, img, is_mask=False, training_size= self.training_size)
+        mask = self.preprocess(self.mask_values, mask, is_mask=True, training_size= self.training_size)
 
         return {
             'image': torch.as_tensor(img.copy()).float().contiguous(),
@@ -113,5 +136,5 @@ class BasicDataset(Dataset):
 
 
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, scale=1):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+    def __init__(self, images_dir, mask_dir, scale=1, training_size = 512):
+        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask', training_size = training_size)
