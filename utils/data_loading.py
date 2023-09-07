@@ -11,6 +11,8 @@ from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import random, cv2
+
 
 
 def load_image(filename):
@@ -36,25 +38,38 @@ def unique_mask_values(idx, mask_dir, mask_suffix):
     
 def square_padding(image, is_mask):
         
-        # Find the dimensions of the image
-        width, height = image.size
-        # Calculate the size of the square (maximum of height and width)
-        size = max(width, height)
+    # Find the dimensions of the image
+    width, height = image.size
+    # Calculate the size of the square (maximum of height and width)
+    size = max(width, height)
 
-        if is_mask:
-            square_image = Image.new('L', (size, size), 0)
-        else:
-            # Create a new square canvas filled with black (zeros)
-            square_image = Image.new('RGB', (size, size), (0, 0, 0))
+    if is_mask:
+        square_image = Image.new('L', (size, size), 0)
+    else:
+        # Create a new square canvas filled with black (zeros)
+        square_image = Image.new('RGB', (size, size), (0, 0, 0))
 
-        # Calculate the position to paste the rectangular image in the center of the square canvas
-        x_offset = (size - width) // 2
-        y_offset = (size - height) // 2
+    # Calculate the position to paste the rectangular image in the center of the square canvas
+    x_offset = (size - width) // 2
+    y_offset = (size - height) // 2
 
-        # Paste the rectangular image onto the square canvas
-        square_image.paste(image, (x_offset, y_offset))
-        
-        return square_image
+    # Paste the rectangular image onto the square canvas
+    square_image.paste(image, (x_offset, y_offset))
+    
+    return square_image
+
+def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
+    r = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain] + 1  # random gains
+    hue, sat, val = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HSV))
+    dtype = img.dtype  # uint8
+
+    x = np.arange(0, 256, dtype=np.int16)
+    lut_hue = ((x * r[0]) % 180).astype(dtype)
+    lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
+    lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
+
+    img_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val))).astype(dtype)
+    cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)  # no return needed
 
 
 class BasicDataset(Dataset):
@@ -84,14 +99,8 @@ class BasicDataset(Dataset):
         return len(self.ids)
 
     @staticmethod
-    def preprocess(mask_values, pil_img, is_mask, training_size):
+    def preprocess(mask_values, img, is_mask, training_size):
         newW, newH = training_size, training_size
-        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-        pil_img = square_padding(pil_img, is_mask)
-        
-        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
-        img = np.asarray(pil_img)
-
         if is_mask:
             mask = np.zeros((newH, newW), dtype=np.int64)
             for i, v in enumerate(mask_values):
@@ -112,6 +121,18 @@ class BasicDataset(Dataset):
                 img = img / 255.0
 
             return img
+    
+    @staticmethod
+    def padding_resize(pil_img, is_mask, training_size):
+        
+        newW, newH = training_size, training_size
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        pil_img = square_padding(pil_img, is_mask)
+        
+        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        img = np.asarray(pil_img)
+        
+        return img
 
     def __getitem__(self, idx):
         name = self.ids[idx]
@@ -126,6 +147,25 @@ class BasicDataset(Dataset):
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
+        # Padding and then resize image
+        img = self.padding_resize(img, is_mask=False, training_size=self.training_size)
+        mask = self.padding_resize(mask, is_mask=True, training_size=self.training_size)
+                # Augmentation
+        if random.random() < 0.2:
+            img = np.flipud(img)
+            mask = np.flipud(mask)
+        if random.random() < 0.2:
+            img = np.fliplr(img)
+            mask = np.fliplr(mask)
+        if random.random() < 0.3:
+            num_non_zero_pixels = np.count_nonzero(mask)
+            if num_non_zero_pixels > 15000: # mean that we just use blur filter with large objects
+                img = cv2.GaussianBlur(img, (5, 5), 0)
+        if random.random() < 0.2:
+            alpha = 1.5  # Contrast control (1.0 is no change)
+            beta = 10    # Brightness control (0 is no change)
+            img = np.clip(alpha * img + beta, 0, 255).astype(np.uint8)
+        
         img = self.preprocess(self.mask_values, img, is_mask=False, training_size= self.training_size)
         mask = self.preprocess(self.mask_values, mask, is_mask=True, training_size= self.training_size)
 

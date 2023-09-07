@@ -1,0 +1,5 @@
+# Predict
+CUDA_VISIBLE_DEVICES=5 python predict.py -i /home/jay2/TOMO_new/Unet/data/imgs/0994.jpg -o output.png --image-size=512 --model=/home/jay2/TOMO_new/Unet/checkpoints/checkpoint_epoch50.pth --classes=3
+
+# Train
+ CUDA_VISIBLE_DEVICES=5 python3 train.py --amp --epochs=100 --batch-size=4 --classes=3 --learning-rate=0.0001

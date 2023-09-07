@@ -23,6 +23,10 @@ dir_img = Path('./data/imgs/')
 dir_mask = Path('./data/masks/')
 dir_checkpoint = Path('./checkpoints/')
 
+def save_batch_images(batch, save_dir, prefix='image', format='png'):
+    for i, image in enumerate(batch):
+        image = transforms.ToPILImage()(image)  # Convert tensor to PIL Image
+        image.save(f'{save_dir}/{prefix}_{i}.{format}')
 
 def train_model(
         model,
@@ -87,7 +91,13 @@ def train_model(
         model.train()
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
-            for batch in train_loader:
+            for index,batch in enumerate(train_loader):
+                
+                # Save example image of 10 batch
+                if index < 20 and epoch ==1:
+                    os.makedirs(os.path.join(dir_checkpoint,"example_image"), exist_ok=True)
+                    save_batch_images(batch['image'], os.path.join(dir_checkpoint,"example_image"), prefix=f'epoch_{epoch}_batch_{index}', format='png')
+                
                 images, true_masks = batch['image'], batch['mask']
 
                 assert images.shape[1] == model.n_channels, \
@@ -163,7 +173,7 @@ def train_model(
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
-            torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
+            torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}_{}.pth'.format(epoch, round(val_score.item(),3))))
             logging.info(f'Checkpoint {epoch} saved!')
 
 
