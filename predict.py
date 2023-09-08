@@ -40,7 +40,7 @@ def predict_img(net,
     min_size = min(full_img.size[:2])
     mask = mask.astype(np.uint8)
     print(mask.dtype, "shape of mask")
-    mask = cv2.resize(np.array(mask), (origin_size,origin_size))
+    mask = cv2.resize(mask, (origin_size,origin_size), interpolation = cv2.INTER_NEAREST)
     
     padding_size = (origin_size-min_size)//2
     mask = mask[padding_size: origin_size - padding_size,:]
