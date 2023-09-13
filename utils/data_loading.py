@@ -177,7 +177,7 @@ class BasicDataset(Dataset):
             beta = random.randint(0,5)    # Brightness control (0 is no change)
             img = np.clip(alpha * img + beta, 0, 255).astype(np.uint8)
         if random.random() < 0.45:
-            img, mask = translate(img, mask, max_shift_x = 100, max_shift_y= 100)
+            img, mask = translate(img, mask, max_shift_x = 50, max_shift_y= 50)
         
         img = self.preprocess(self.mask_values, img, is_mask=False, training_size= self.training_size)
         mask = self.preprocess(self.mask_values, mask, is_mask=True, training_size= self.training_size)
