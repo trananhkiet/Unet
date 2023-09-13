@@ -58,6 +58,17 @@ def square_padding(image, is_mask):
     
     return square_image
 
+def translate(image, mask, max_shift_x = 20, max_shift_y = 20):
+    shift_x = random.randint(-max_shift_x, max_shift_x)
+    shift_y = random.randint(-max_shift_y, max_shift_y)
+    
+    translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+    
+    augmented_image = cv2.warpAffine(image, translation_matrix, (image.shape[1], image.shape[0]))
+    augmented_mask = cv2.warpAffine(mask, translation_matrix, (mask.shape[1], mask.shape[0]))
+    
+    return augmented_image, augmented_mask
+
 def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
     r = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain] + 1  # random gains
     hue, sat, val = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HSV))
@@ -162,9 +173,11 @@ class BasicDataset(Dataset):
             if num_non_zero_pixels > 15000: # mean that we just use blur filter with large objects
                 img = cv2.GaussianBlur(img, (5, 5), 0)
         if random.random() < 0.2:
-            alpha = 1.5  # Contrast control (1.0 is no change)
-            beta = 10    # Brightness control (0 is no change)
+            alpha = 1.1  # Contrast control (1.0 is no change)
+            beta = random.randint(0,5)    # Brightness control (0 is no change)
             img = np.clip(alpha * img + beta, 0, 255).astype(np.uint8)
+        if random.random() < 0.45:
+            img, mask = translate(img, mask, max_shift_x = 100, max_shift_y= 100)
         
         img = self.preprocess(self.mask_values, img, is_mask=False, training_size= self.training_size)
         mask = self.preprocess(self.mask_values, mask, is_mask=True, training_size= self.training_size)
