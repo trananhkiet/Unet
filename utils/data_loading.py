@@ -12,6 +12,8 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 import random, cv2
+from utils.augmentation import randomMixture, replace_background, rotate_image
+import glob
 
 
 
@@ -144,6 +146,38 @@ class BasicDataset(Dataset):
         img = np.asarray(pil_img)
         
         return img
+    
+    def crop_image_and_mask(self, image, mask):
+        mask_array = np.array(mask.copy())
+        image_array = np.array(image.copy())
+        # mask_array = cv2.cvtColor(mask_array, cv2.COLOR_BGR2GRAY)
+
+        mask_array[mask_array >0] = 255
+        contours, _ = cv2.findContours(mask_array, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(contours)> 0:
+            contour= contours[0]
+            x, y, w, h = cv2.boundingRect(contour)
+            self.have_label = True
+        else:
+            w = random.randint(int(mask_array.shape[0]*0.2), int(mask_array.shape[0]*0.5))
+            h = w
+            x = random.randint(0, mask_array.shape[1] - w - 1)
+            y = random.randint(0, mask_array.shape[0] - h -1)
+            self.have_label = True
+        
+        if x > 30 and y > 30 and x < mask_array.shape[1] - 31 and y < mask_array.shape[0] - 31:
+            translation_value = random.randint(0, 8) if w < 50 else random.randint(0, 30)
+            translation_value2 = random.randint(0, 8) if w < 50 else random.randint(0, 30)
+        else:
+            translation_value = translation_value2 = 0
+            
+        mask_array = np.array(mask.copy())
+        mask_array = mask_array[y - translation_value: y + h + translation_value2 , x - translation_value: x + w + translation_value2]
+        image_array = image_array[y - translation_value: y + h + translation_value2 , x - translation_value: x + w+ translation_value2]
+        
+        image = Image.fromarray(image_array)
+        mask = Image.fromarray(mask_array)
+        return image, mask
 
     def __getitem__(self, idx):
         name = self.ids[idx]
@@ -154,6 +188,10 @@ class BasicDataset(Dataset):
         assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
+        
+        # Function to crop mask area
+        img, mask = self.crop_image_and_mask(img, mask)
+        origin_size = mask.size
 
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
@@ -161,23 +199,45 @@ class BasicDataset(Dataset):
         # Padding and then resize image
         img = self.padding_resize(img, is_mask=False, training_size=self.training_size)
         mask = self.padding_resize(mask, is_mask=True, training_size=self.training_size)
-                # Augmentation
+     
+        # Augmentation
+        if random.random() < 0.8 and self.have_label and origin_size[0] > 50:
+            background_path = random.choice(glob.glob("/home/jay2/TOMO_new/Raw_data/Background_adding/rgb/*"))
+            background_image = cv2.cvtColor(cv2.imread(background_path), cv2.COLOR_BGR2RGB)
+            
+            if random.random()<0.5:
+                img = replace_background(img, mask, background_image)
+                img = randomMixture(img, background_image, max_mix= 0.14)
+            else:
+                img = randomMixture(img, background_image, max_mix= 0.14)
+                if random.random() < 0.2:
+                    random_color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                    background_image = np.full((512, 512, 3), random_color, dtype=np.uint8)
+                    img = replace_background(img, mask, background_image)
+        
+        if random.random() < 0.7:
+            img, mask = rotate_image(img, mask, angle_range=180)
+        
         if random.random() < 0.2:
             img = np.flipud(img)
             mask = np.flipud(mask)
         if random.random() < 0.2:
             img = np.fliplr(img)
             mask = np.fliplr(mask)
-        if random.random() < 0.3:
-            num_non_zero_pixels = np.count_nonzero(mask)
-            if num_non_zero_pixels > 15000: # mean that we just use blur filter with large objects
+        
+        if random.random() <0.3:
+            if origin_size[0] > 70:
                 img = cv2.GaussianBlur(img, (5, 5), 0)
-        if random.random() < 0.2:
-            alpha = 1.1  # Contrast control (1.0 is no change)
-            beta = random.randint(0,5)    # Brightness control (0 is no change)
-            img = np.clip(alpha * img + beta, 0, 255).astype(np.uint8)
+        
+        if random.random() < 0.5:
+            brightness_factor = random.uniform(0.25,1.1)  # You can adjust this value as needed
+            # Apply the brightness adjustment
+            img = cv2.convertScaleAbs(img, alpha=brightness_factor, beta=0)
         if random.random() < 0.45:
-            img, mask = translate(img, mask, max_shift_x = 50, max_shift_y= 50)
+            img, mask = translate(img, mask, max_shift_x = 35, max_shift_y= 35)
+            
+        # save_img = np.concatenate((img, cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)), axis = 0)
+        # cv2.imwrite("/home/jay2/TOMO_new/Unet/checkpoints/example_image/"+ str(random.randint(0,1000)) +".png",save_img)
         
         img = self.preprocess(self.mask_values, img, is_mask=False, training_size= self.training_size)
         mask = self.preprocess(self.mask_values, mask, is_mask=True, training_size= self.training_size)

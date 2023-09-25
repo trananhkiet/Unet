@@ -12,12 +12,16 @@ from pathlib import Path
 from torch import optim
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
+from collections import defaultdict
+from PIL import Image
+import numpy as np
 
 import wandb
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
+from utils.loss_funtion import FocalLoss
 
 dir_img = Path('./data/imgs/')
 dir_mask = Path('./data/masks/')
@@ -48,7 +52,7 @@ def train_model(
         dataset = CarvanaDataset(dir_img, dir_mask, img_scale, training_size = input_size)
     except (AssertionError, RuntimeError, IndexError):
         dataset = BasicDataset(dir_img, dir_mask, img_scale, training_size = input_size)
-
+    
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
@@ -79,13 +83,15 @@ def train_model(
     ''')
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # optimizer = optim.RMSprop(model.parameters(),
+    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=30)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
+    criterion = FocalLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     global_step = 0
 
+    best_val_loss = 0
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -137,44 +143,45 @@ def train_model(
                 })
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
-                # Evaluation round
-                division_step = (n_train // (batch_size))
-                if division_step > 0:
-                    if global_step % division_step == 0:
-                        histograms = {}
-                        for tag, value in model.named_parameters():
-                            tag = tag.replace('/', '.')
-                            if not (torch.isinf(value) | torch.isnan(value)).any():
-                                histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
-                            if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
-                                histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
+            # Validation
+            if True:
+                histograms = {}
+                for tag, value in model.named_parameters():
+                    tag = tag.replace('/', '.')
+                    if not (torch.isinf(value) | torch.isnan(value)).any():
+                        histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
+                    if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
+                        histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score = evaluate(model, val_loader, device, amp)
-                        scheduler.step(val_score)
+                val_score = evaluate(model, val_loader, device, amp)
+                scheduler.step(val_score)
 
-                        logging.info('Validation Dice score: {}'.format(val_score))
-                        try:
-                            experiment.log({
-                                'learning rate': optimizer.param_groups[0]['lr'],
-                                'validation Dice': val_score,
-                                'images': wandb.Image(images[0].cpu()),
-                                'masks': {
-                                    'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
-                                },
-                                'step': global_step,
-                                'epoch': epoch,
-                                **histograms
-                            })
-                        except:
-                            pass
+                logging.info('Validation Dice score: {}'.format(val_score))
+                try:
+                    experiment.log({
+                        'learning rate': optimizer.param_groups[0]['lr'],
+                        'validation Dice': val_score,
+                        'images': wandb.Image(images[0].cpu()),
+                        'masks': {
+                            'true': wandb.Image(true_masks[0].float().cpu()),
+                            'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                        },
+                        'step': global_step,
+                        'epoch': epoch,
+                        **histograms
+                    })
+                except:
+                    pass
 
         if save_checkpoint:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
-            torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}_{}.pth'.format(epoch, round(val_score.item(),3))))
-            logging.info(f'Checkpoint {epoch} saved!')
+
+            if val_score > best_val_loss:
+                torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}_{}.pth'.format(epoch, round(val_score.item(),3))))
+                logging.info(f'Checkpoint {epoch} saved!')
+                best_val_loss = val_score
 
 
 def get_args():
@@ -211,7 +218,9 @@ if __name__ == '__main__':
     logging.info(f'Network:\n'
                  f'\t{model.n_channels} input channels\n'
                  f'\t{model.n_classes} output channels (classes)\n'
-                 f'\t{"Bilinear" if model.bilinear else "Transposed conv"} upscaling')
+                 f'\t{args.input_size} input size\n'
+                 f'\t{"Bilinear" if model.bilinear else "Transposed conv"} upscaling'
+                 )
 
     if args.load:
         state_dict = torch.load(args.load, map_location=device)

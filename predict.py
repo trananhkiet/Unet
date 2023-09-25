@@ -22,15 +22,29 @@ def predict_img(net,
                 image_size= 512):
     net.eval()
     img = BasicDataset.padding_resize(full_img, is_mask=False, training_size=image_size)
+    
+    # brightness_factor = 1.5  # You can adjust this value as needed
+    # # Apply the brightness adjustment
+    # img = cv2.convertScaleAbs(img, alpha=brightness_factor, beta=0)
+    
+    # cv2.imwrite("test.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
     img = torch.from_numpy(BasicDataset.preprocess(None, img, is_mask=False, training_size = image_size))
     img = img.unsqueeze(0)
     img = img.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
         output = net(img).cpu()
-        # output = F.interpolate(output, (full_img.size[1], full_img.size[0]), mode='bilinear')
+        output = F.softmax(output, dim=1)
+        
+        # # Define a threshold for each class (3 classes in this example)
+        # thresholds = [0.0, 0.99, 0.0]  # Adjust these thresholds as needed
+
+        # for class_idx, threshold in enumerate(thresholds):
+        #     print(threshold)
+        #     output[:, class_idx, :, :] = torch.where(output[:, class_idx, :, :] < threshold, torch.tensor(0, dtype=torch.float32), output[:, class_idx, :, :])
+        
         if net.n_classes > 1:
-            mask = output.argmax(dim=1)
+            mask = output.argmax(dim=1) 
         else:
             mask = torch.sigmoid(output) > out_threshold
             
@@ -89,7 +103,7 @@ if __name__ == '__main__':
     args = get_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-    in_files = glob.glob(os.path.join(args.input,"*jpg"))
+    in_files = glob.glob(os.path.join(args.input,"*"))
     output_dir = "_result"
     os.makedirs(output_dir, exist_ok=True)
 
